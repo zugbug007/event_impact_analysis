@@ -14,7 +14,7 @@ plan(multisession)
 #https://www3.an.adobe.com/x/3_1doo8z
 
 ui <- dashboardPage(
-  dashboardHeader(title = "Impact Analysis"),
+  dashboardHeader(title = "Time Series Analysis"),
   dashboardSidebar(
     fileInput("file", "Upload CSV File", accept = c(".csv")),
     selectInput("date_col", "Select Date Column", choices = NULL),
@@ -25,6 +25,8 @@ ui <- dashboardPage(
     dateInput("event_end", "Event End Date", 
               value = today(),
               max = today()),
+    sliderInput('frequency', 'Frequency', 
+                value = 7, min = 2, max = 12),
     checkboxInput("auto_tune", "Auto-tune Hyperparameters", value = FALSE),
     radioButtons("decomp_type", "Decomposition Type",
                  choices = c("Additive" = "additive", 
@@ -92,10 +94,8 @@ server <- function(input, output, session) {
   best_params <- reactiveVal(NULL)
   results <- reactiveVal(NULL)
   
- 
-  
   observeEvent(input$analyze, {
-    req(data(), input$date_col, input$metric_col, input$event_start, input$event_end)
+    req(data(), input$date_col, input$metric_col, input$event_start, input$event_end, input$frequency, input$decomp_type)
     
     showNotification("Analysis is running...", duration = NULL, id = "analysis")
     
@@ -303,7 +303,7 @@ server <- function(input, output, session) {
   
   # Create decomposition reactive value
   decomposition <- reactive({
- #  browser() 
+   browser() 
      req(data(), input$date_col, input$metric_col)
     
     # Create time series object
@@ -312,7 +312,7 @@ server <- function(input, output, session) {
       mutate(ds = as.Date(ds))
     
     # Convert to ts object (assuming monthly data - adjust frequency if needed)
-    ts_data <- ts(df$y, frequency = 12)
+    ts_data <- ts(df$y, frequency = input$frequency)
     
     # Perform decomposition
     decomp <- decompose(ts_data, type = input$decomp_type)
@@ -340,7 +340,7 @@ server <- function(input, output, session) {
     
     # Get the latest 12 months of data
     dates <- tail(seq(from = min(data()[[input$date_col]]), by = "day", length.out = length(decomp$x)), 365)
-    data_debug <- decomp
+   # data_debug <- decomp
     
     plot_ly() %>%
       add_trace(x = dates, y = tail(decomp$x, 365), name = "Original", type = "scatter", mode = "lines", line = list(color = "black")) %>%
