@@ -8,6 +8,8 @@ library(DT)
 library(lubridate)
 library(future)
 library(promises)
+library(forecast)
+library(tseries)
 #options(shiny.reactlog = TRUE)
 
 plan(multisession)
@@ -62,7 +64,53 @@ ui <- dashboardPage(
                  box(plotlyOutput("seasonal_pattern"), width = 12, title = "Seasonal Pattern"),
                  box(uiOutput("information_box"), width = 12, solidHeader = TRUE, status = "primary", title = "Time Series Decomposition")
                )
-               
+      ),
+      tabPanel("ARIMA Analysis",
+               fluidRow(
+                 box(
+                   title = "ARIMA Forecast",
+                   plotlyOutput("arima_forecast_plot"),
+                   width = 12
+                 )
+               ),
+               fluidRow(
+                 box(
+                   title = "Stationarity Test Results",
+                   verbatimTextOutput("stationarity_results"),
+                   width = 12
+                 )
+               ),
+               fluidRow(
+                 box(
+                   title = "ARIMA Model Details",
+                   verbatimTextOutput("arima_details"),
+                   width = 6
+                 ),
+                 box(
+                   title = "Model Accuracy Metrics",
+                   verbatimTextOutput("arima_accuracy"),
+                   width = 6
+                 )
+               ),
+               fluidRow(
+                 box(
+                   title = "ACF Plot",
+                   plotOutput("acf_plot"),
+                   width = 6
+                 ),
+                 box(
+                   title = "PACF Plot",
+                   plotOutput("pacf_plot"),
+                   width = 6
+                 )
+               ),
+               fluidRow(
+                 box(
+                   title = "Residual Diagnostics",
+                   plotOutput("residual_plot"),
+                   width = 12
+                 )
+               )
       )
     )
   )
@@ -93,6 +141,7 @@ server <- function(input, output, session) {
   
   best_params <- reactiveVal(NULL)
   results <- reactiveVal(NULL)
+  arima_model <- reactiveVal(NULL)
   
   observeEvent(input$analyze, {
     req(data(), input$date_col, input$metric_col, input$event_start, input$event_end, input$frequency, input$decomp_type)
@@ -464,6 +513,111 @@ server <- function(input, output, session) {
       )
     )
   })
+  
+  observe({
+    req(data(), input$metric_col)
+    
+    # Get the time series data
+    ts_data <- ts(data()[[input$metric_col]], frequency = input$frequency)
+    
+    # Perform ADF test for stationarity
+    adf_test <- adf.test(ts_data)
+    
+    # Create and store output text for stationarity results
+    stationarity_text <- sprintf(
+      "Augmented Dickey-Fuller Test Results:\n
+    Test Statistic: %.3f\n
+    p-value: %.3f\n
+    Interpretation: The time series is %s",
+      adf_test$statistic,
+      adf_test$p.value,
+      ifelse(adf_test$p.value < 0.05, "stationary", "non-stationary")
+    )
+    
+    # Fit auto.arima model
+    model <- auto.arima(ts_data, 
+                        stepwise = TRUE,
+                        approximation = FALSE,
+                        trace = FALSE)
+    
+    # Store the model in reactive value
+    arima_model(list(
+      model = model,
+      stationarity = stationarity_text,
+      data = ts_data
+    ))
+  })
+  
+  # Render stationarity test results
+  output$stationarity_results <- renderPrint({
+    req(arima_model())
+    cat(arima_model()$stationarity)
+  })
+  
+  # Render ARIMA model details
+  output$arima_details <- renderPrint({
+    req(arima_model())
+    summary(arima_model()$model)
+  })
+  
+  # Render model accuracy metrics
+  output$arima_accuracy <- renderPrint({
+    req(arima_model())
+    accuracy(arima_model()$model)
+  })
+  
+  # Create ARIMA forecast plot
+  output$arima_forecast_plot <- renderPlotly({
+    req(arima_model())
+    
+    # Generate forecast
+    forecast_periods <- 30
+    fc <- forecast(arima_model()$model, h = forecast_periods)
+    
+    # Create date sequence for forecast
+    last_date <- tail(data()[[input$date_col]], 1)
+    forecast_dates <- seq(as.Date(last_date), by = "day", length.out = forecast_periods + 1)[-1]
+    
+    # Create plot
+    plot_ly() %>%
+      add_lines(x = data()[[input$date_col]], 
+                y = arima_model()$data,
+                name = "Actual",
+                line = list(color = "blue")) %>%
+      add_lines(x = forecast_dates,
+                y = fc$mean,
+                name = "Forecast",
+                line = list(color = "red")) %>%
+      add_ribbons(x = forecast_dates,
+                  ymin = fc$lower[, 2],
+                  ymax = fc$upper[, 2],
+                  name = "95% Confidence",
+                  fillcolor = "rgba(255, 0, 0, 0.2)",
+                  line = list(color = "transparent")) %>%
+      layout(title = "ARIMA Forecast",
+             xaxis = list(title = "Date"),
+             yaxis = list(title = input$metric_col))
+  })
+  
+  # Create ACF plot
+  output$acf_plot <- renderPlot({
+    req(arima_model())
+    acf(arima_model()$data, main = "Autocorrelation Function")
+  })
+  
+  # Create PACF plot
+  output$pacf_plot <- renderPlot({
+    req(arima_model())
+    pacf(arima_model()$data, main = "Partial Autocorrelation Function")
+  })
+  
+  # Create residual diagnostic plots
+  output$residual_plot <- renderPlot({
+    req(arima_model())
+    par(mfrow = c(2, 2))
+    checkresiduals(arima_model()$model)
+  })
+  
 }
 
 # Run the app
