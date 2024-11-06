@@ -129,8 +129,6 @@ server <- function(input, output, session) {
           # Fit model with current parameters
           model <- prophet(
             df[df$ds < event_start,],
-           # mcmc.samples = 0,
-           # interval.width = 0.95,
            yearly.seasonality = TRUE,
             holidays = ukbankholidays,
             changepoint.prior.scale = params$changepoint_prior_scale,
@@ -170,8 +168,6 @@ server <- function(input, output, session) {
           model <- prophet(
             df[df$ds < event_start,],
             holidays = ukbankholidays,
-          #  mcmc.samples = 0,
-            #interval.width = 0.95,
             yearly.seasonality = TRUE,
             changepoint.prior.scale = best_params$changepoint_prior_scale,
             seasonality.prior.scale = best_params$seasonality_prior_scale,
@@ -291,6 +287,7 @@ server <- function(input, output, session) {
   })
   
   output$best_params <- renderPrint({
+    #  browser() 
     best_params_df <- best_params()
     if (!is.null(best_params_df) && nrow(best_params_df) > 0) {
       best_params_df$mae <- round(as.numeric(best_params_df$mae), 4)
@@ -303,7 +300,7 @@ server <- function(input, output, session) {
   
   # Create decomposition reactive value
   decomposition <- reactive({
-   browser() 
+ #  browser() 
      req(data(), input$date_col, input$metric_col)
     
     # Create time series object
