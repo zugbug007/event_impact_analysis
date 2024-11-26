@@ -10,6 +10,7 @@ library(future)
 library(promises)
 library(forecast)
 library(tseries)
+library(zoo)
 #options(shiny.reactlog = TRUE)
 
 plan(multisession)
@@ -22,18 +23,13 @@ ui <- dashboardPage(
     selectInput("date_col", "Select Date Column", choices = NULL),
     selectInput("metric_col", "Select Metric Column", choices = NULL),
     dateInput("event_start", "Event Start Date", 
-              value = as.Date("2024-05-30"),
+              value = as.Date("2024-11-21"),
               max = today()),
     dateInput("event_end", "Event End Date", 
               value = today(),
               max = today()),
-    sliderInput('frequency', 'Frequency', 
-                value = 7, min = 2, max = 12),
     checkboxInput("auto_tune", "Auto-tune Hyperparameters", value = FALSE),
-    radioButtons("decomp_type", "Decomposition Type",
-                 choices = c("Additive" = "additive", 
-                             "Multiplicative" = "multiplicative"),
-                 selected = "additive"),
+    
     actionButton("analyze", "Analyse")
   ),
   dashboardBody(
@@ -51,7 +47,8 @@ ui <- dashboardPage(
                  box(verbatimTextOutput("best_params"), width = 12, title = "Best Hyperparameters")
                ),
                fluidRow(
-                 box(DTOutput("results_table"), width = 12, title = "Daily Results")
+                 box(
+                   DTOutput("results_table"), width = 12, title = "Daily Results")
                )
       ),
       tabPanel("Time Series Decomposition",
@@ -59,7 +56,17 @@ ui <- dashboardPage(
                  valueBoxOutput("trend_strength_box", width = 4),
                  valueBoxOutput("seasonal_strength_box", width = 4),
                  valueBoxOutput("remainder_strength_box", width = 4)
-               ),fluidRow(
+               ),
+               column(3, wellPanel( 
+                sliderInput('frequency', 'Frequency', 
+                           value = 7, min = 2, max = 12),
+                radioButtons("decomp_type", "Decomposition Type",
+                             choices = c("Additive" = "additive", 
+                                         "Multiplicative" = "multiplicative"),
+                             selected = "additive")
+                      )
+                ),
+               fluidRow(
                  box(plotlyOutput("decomp_plot"), width = 12, title = "Time Series Decomposition"),
                  box(plotlyOutput("seasonal_pattern"), width = 12, title = "Seasonal Pattern"),
                  box(uiOutput("information_box"), width = 12, solidHeader = TRUE, status = "primary", title = "Time Series Decomposition")
@@ -111,7 +118,33 @@ ui <- dashboardPage(
                    width = 12
                  )
                )
-      )
+      ),
+      # New Rolling Average Tab
+      tabPanel("Rolling Average Analysis",
+               fluidRow(
+                 # Strength value boxes for rolling average
+                 valueBoxOutput("rolling_trend_strength_box", width = 4),
+                 valueBoxOutput("rolling_seasonal_strength_box", width = 4),
+                 valueBoxOutput("rolling_remainder_strength_box", width = 4)
+               ),
+               # Slider for rolling window
+               column(4,
+                      sliderInput("rolling_window", 
+                                  "Rolling Window (Days)", 
+                                  min = 3, 
+                                  max = 90, 
+                                  value = 7,
+                                  step = 1)
+               ),
+               fluidRow(
+                 # Rolling average decomposition plot
+                 box(plotlyOutput("rolling_decomp_plot"), width = 12, title = "Rolling Average Decomposition"),
+                 # Rolling average seasonal pattern plot
+                 box(plotlyOutput("rolling_seasonal_pattern"), width = 12, title = "Rolling Average Seasonal Pattern"),
+                 # Information box for rolling average analysis
+                 box(uiOutput("rolling_information_box"), width = 12, solidHeader = TRUE, status = "primary", title = "Rolling Average Analysis")
+               )
+    )
     )
   )
 )
@@ -312,7 +345,7 @@ server <- function(input, output, session) {
                   name = "Uncertainty", fillcolor = "rgba(0, 0, 255, 0.2)", line = list(color = "transparent")) %>%
       add_lines(data = results()$results, x = ~ds, y = ~y, name = "Actual", line = list(color = "red")) %>%
       add_annotations(x = input$event_start, y = max_y, 
-                      text = "Reject All Enabled", 
+                      text = "Impact Event", 
                       showarrow = TRUE, arrowhead = 2) %>%
       add_segments(x = input$event_start, xend = input$event_start, 
                    y = min_y - 0.05 * y_range, yend = max_y + 0.05 * y_range,
@@ -616,6 +649,170 @@ server <- function(input, output, session) {
     req(arima_model())
     par(mfrow = c(2, 2))
     checkresiduals(arima_model()$model)
+  })
+  
+  # New Rolling Average Decomposition Reactive
+  rolling_decomposition <- reactive({
+    req(data(), input$date_col, input$metric_col, input$rolling_window)
+    
+    # Create data frame with date and metric
+    df <- data() %>%
+      select(ds = input$date_col, y = input$metric_col) %>%
+      mutate(ds = as.Date(ds))
+    
+    # Calculate rolling average
+    df$rolling_y <- zoo::rollmean(df$y, k = input$rolling_window, fill = NA, align = "center")
+    
+    # Convert to time series object
+    ts_data <- ts(df$rolling_y, frequency = input$frequency)
+    
+    # Perform decomposition
+    decomp <- decompose(ts_data, type = input$decomp_type)
+    
+    # Calculate component strengths
+    var_trend <- var(decomp$trend, na.rm = TRUE)
+    var_seasonal <- var(decomp$seasonal, na.rm = TRUE)
+    var_random <- var(decomp$random, na.rm = TRUE)
+    var_total <- var_trend + var_seasonal + var_random
+    
+    # Return both decomposition and strength metrics
+    list(
+      decomposition = decomp,
+      rolling_data = df,
+      trend_strength = var_trend / var_total * 100,
+      seasonal_strength = var_seasonal / var_total * 100,
+      remainder_strength = var_random / var_total * 100
+    )
+  })
+  
+  # Rolling Average Decomposition Plot
+  output$rolling_decomp_plot <- renderPlotly({
+    req(rolling_decomposition())
+    decomp <- rolling_decomposition()$decomposition
+    df <- rolling_decomposition()$rolling_data
+    
+    # Get the latest 12 months of data
+    dates <- tail(df$ds, 365)
+    
+    plot_ly() %>%
+     # add_trace(x = dates, y = tail(decomp$x, 365), name = "Original", type = "scatter", mode = "lines", line = list(color = "black")) %>%
+      add_trace(x = dates, y = tail(df$rolling_y, 365), name = "Rolling Average", type = "scatter", mode = "lines", line = list(color = "orange")) %>%
+      add_trace(x = dates, y = tail(decomp$trend, 365), name = "Trend", type = "scatter", mode = "lines", line = list(color = "blue")) %>%
+      add_trace(x = dates, y = tail(decomp$seasonal, 365), name = "Seasonal", type = "scatter", mode = "lines", line = list(color = "green")) %>%
+      add_trace(x = dates, y = tail(decomp$random, 365), name = "Remainder", type = "scatter", mode = "lines", line = list(color = "red")) %>%
+      layout(
+        title = "Rolling Average Time Series Decomposition",
+        xaxis = list(
+          title = "Date",
+          tickformat = "%b %Y",
+          dtick = "M1",
+          tickangle = 45
+        ),
+        yaxis = list(title = paste0("Rolling Average (", input$rolling_window, " days) of ", input$metric_col))
+      )
+  })
+  
+  # Rolling Average Seasonal Pattern Plot
+  output$rolling_seasonal_pattern <- renderPlotly({
+    req(rolling_decomposition())
+    
+    # Get the month names from original data
+    month_names <- data() %>%
+      mutate(month = format(as.Date(get(input$date_col)), "%b %Y")) %>%
+      pull(month) %>%
+      unique()
+    
+    # If we don't have all 12 months in the data, use built-in month abbreviations
+    if(length(month_names) < 12) {
+      month_names <- month.abb
+    }
+    
+    decomp <- rolling_decomposition()$decomposition
+    
+    # Get the last 12 months of the seasonal component
+    months <- 1:12
+    seasonal_pattern <- tail(decomp$seasonal, 12)
+    
+    plot_ly() %>%
+      add_trace(x = months, y = seasonal_pattern, 
+                type = "scatter", mode = "lines+markers",
+                line = list(color = "green")) %>%
+      layout(
+        title = "Rolling Average Seasonal Pattern",
+        xaxis = list(
+          title = "Month",
+          tickvals = 1:12,
+          tickformat = "%b %Y",
+          ticktext = tail(month_names, 12),
+          tickangle = 45
+        ),
+        yaxis = list(title = "Seasonal Effect")
+      )
+  })
+  
+  # Rolling Average Strength Boxes
+  output$rolling_trend_strength_box <- renderValueBox({
+    req(rolling_decomposition())
+    valueBox(
+      value = paste0(round(rolling_decomposition()$trend_strength, 1), "%"),
+      subtitle = "Trend Strength (Rolling Avg)",
+      icon = icon("line-chart"),
+      color = "blue"
+    )
+  })
+  
+  output$rolling_seasonal_strength_box <- renderValueBox({
+    req(rolling_decomposition())
+    valueBox(
+      value = paste0(round(rolling_decomposition()$seasonal_strength, 1), "%"),
+      subtitle = "Seasonal Strength (Rolling Avg)",
+      icon = icon("calendar"),
+      color = "green"
+    )
+  })
+  
+  output$rolling_remainder_strength_box <- renderValueBox({
+    req(rolling_decomposition())
+    valueBox(
+      value = paste0(round(rolling_decomposition()$remainder_strength, 1), "%"),
+      subtitle = "Remainder Strength (Rolling Avg)",
+      icon = icon("random"),
+      color = "red"
+    )
+  })
+  
+  # Rolling Average Information Box
+  output$rolling_information_box <- renderUI({
+    tagList(
+      h3("Rolling Average Analysis Information"),
+      p("Rolling average helps smooth out short-term fluctuations and highlight longer-term trends:"),
+      tags$ul(
+        tags$li(
+          strong("Rolling Window:"),
+          paste("The current window is", input$rolling_window, "days. This means each data point represents the average of", input$rolling_window, "surrounding days.")
+        ),
+        tags$li(
+          strong("Trend Smoothing:"),
+          "By taking a moving average, we reduce the impact of daily variations, making underlying trends more visible."
+        ),
+        tags$li(
+          strong("Decomposition Interpretation:"),
+          "Similar to the previous decomposition, this analysis breaks down the rolling average into trend, seasonal, and remainder components."
+        ),
+        tags$li(
+          strong("Strengths Calculation:"),
+          "The component strengths are calculated based on the variance explained by each component in the rolling average time series."
+        ),
+        tags$li(
+          h4("Adjusting the Rolling Window:"),
+          tags$ul(
+            tags$li("Shorter windows (e.g., 3-7 days) capture more recent, short-term variations"),
+            tags$li("Longer windows (e.g., 30-90 days) provide a smoother, more generalized trend"),
+            tags$li("Choose a window that balances detail and overall trend visibility")
+          )
+        )
+      )
+    )
   })
   
 }
